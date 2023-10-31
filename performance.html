@@ -1,0 +1,218 @@
+<html>
+<meta 
+  http-equiv="Content-Security-Policy"
+  content="
+    default-src 'self';
+    script-src 'self' 'unsafe-eval' 'unsafe-inline'; 
+    style-src 'self' fonts.googleapis.com;
+  "
+/>
+<head>
+  <script>
+    const thousand = 1000;
+    const million = 1000 * thousand;
+    const iterations = 10 * million;
+    const arraySize = 10;
+
+    const tests = [{
+      code: `
+        array[swap1] = array[swap1] ^ array[swap2];
+        array[swap2] = array[swap2] ^ array[swap1];
+        array[swap1] = array[swap1] ^ array[swap2];
+      `,
+      note: 'Numeric data only.'
+    }, {
+      code: `
+        array[swap1] ^= array[swap2];
+        array[swap2] ^= array[swap1];
+        array[swap1] ^= array[swap2];
+      `,
+      note: 'Numeric data only.'
+    }, {
+      code: `
+        array[swap1] = array[swap1] + array[swap2];
+        array[swap2] = array[swap1] - array[swap2];
+        array[swap1] = array[swap1] - array[swap2];
+      `,
+      note: 'Numeric data only. No two elements may sum to exceed the Number min/max value.'
+    }, {
+      code: `
+        array[swap1] += array[swap2];
+        array[swap2] = array[swap1] - array[swap2];
+        array[swap1] -= array[swap2];
+      `,
+      note: 'Numeric data only. Must not exceed the Number min/max value.'
+    }, {
+      code: `
+        const temp = array[swap1];
+        array[swap1] = array[swap2];
+        array[swap2] = temp;
+      `,
+    }, {
+      code: `
+        [array[swap1], array[swap2]] = [array[swap2], array[swap1]];
+      `,
+    }, {
+      code: `
+        array[swap1] = array.splice(swap2, 1, array[swap1])[0];
+      `,
+    }, {
+      code: `
+        array[swap1] = [array[swap2], array[swap2] = array[swap1]][0];
+      `,
+    }, {
+      setup: `
+        Array.prototype.swap = function (x,y) {
+          const b = this[x];
+          this[x] = this[y];
+          this[y] = b;
+        }
+      `,
+      code: `
+        array.swap(swap1, swap2);
+      `,
+      note: 'Using custom Array.prototype.swap.',
+    }, {
+      code: `
+        array[swap1] = (array[swap2] += array[swap1] -= array[swap2]) - array[swap1];
+      `,
+    }, {
+      code: `
+        array = [array.pop(), ...array.slice(1), array.shift()];
+      `,
+      note: 'Cannot mutate original array. Can only swap first and last elements.'
+    }, {
+      code: `
+        array[array.length] = array[swap1];
+        array[swap1] = array[swap2];
+        array[swap2] = array[array.length-1];
+        array.length--;
+      `,
+    }];
+
+    const prefix = `
+      function range(start, end = null) {
+        if (end < start) return [];
+
+        const size = end - start + 1;
+
+        const ret = new Array(size);
+        for (let i = 0; i < size; i++) ret[i] = i + start;
+
+        return ret;
+      }
+
+      let array = range(${arraySize});
+      const start = performance.now();
+      for (let i = 0; i < ${iterations}; i++) {
+        const swap1 = i % ${arraySize};
+        const swap2 = (10 - i) % ${arraySize};
+    `;
+
+    const suffix = `
+      }
+      const end = performance.now();
+      const elapsed = end - start;
+      elapsed;
+    `;
+
+    // Get baseline overhead
+    const overhead = runTest();
+
+    // Run all tests
+    const testResults = tests.map(runTest);
+    testResults.sort(sortBy('averageNanos', 'ascending'));
+
+    const adjustedForOverhead = testResults.map(result => {
+      const ret = {...result};
+
+      ret.elapsed -= overhead.elapsed;
+      ret.averageNanos -= overhead.averageNanos;
+
+      return ret;
+    });
+
+    // Output
+    console.log({
+      overhead,
+      testResults,
+      adjustedForOverhead,
+    });
+
+    const output = adjustedForOverhead.map(result => [
+      'Code:',
+      result.code,
+      '-----',
+      `Iterations: ${iterations}`,
+      `Average execution time: ${result.averageNanos.toFixed(2)} ns`,
+    ].join('\n')).join('\n\n');
+    console.log(output);
+
+    const excelFriendly = [
+      'Code\tTime (ns)\tNote',
+      ...adjustedForOverhead.map(result => [
+        result.code.replaceAll('\n', ' '),
+        result.averageNanos.toFixed(2),
+        result.note ? result.note.replaceAll('\n', ' ') : '',
+      ].join('\t'))
+    ].join('\n');
+    if (typeof copy == 'function') copy(excelFriendly)
+    console.log('Excel copy/paste:', excelFriendly)
+    
+    /** @param {{ code: string, note?: string }} test */
+    function runTest(test) {
+      const code = test ? trimLines(test.code) : '';
+      const setup = test && test.setup ? trimLines(test.setup) : '';
+
+      // Run the test
+      const testBody = `${setup}${prefix}${code}${suffix}`;
+
+      console.log('About to test:', testBody);
+
+      // Process results
+      const elapsed = eval(testBody);
+      const millisPerIteration = elapsed / iterations;
+      const averageNanos = millisPerIteration * million;
+
+      const ret = { code, elapsed, averageNanos };
+      if (test && test.note) ret.note = trimLines(test.note);
+      return ret;
+    }
+
+    function trimLines(code) {
+      return code.split('\n').map(s => s.trim()).filter(s => s.length).join('\n');
+    }
+
+    function sortBy(key, direction) {
+      if (typeof key !== 'string') {
+        throw new Error(`sortBy() must specify a string key. Provided: ${valueAndType(key)}`);
+      }
+      if (direction !== 'ascending' && direction !== 'descending') {
+        throw new Error(`sortBy() must specify a sort direction of "ascending" or "descending" only. Provided: ${valueAndType(direction)}`);
+      }
+
+      return function sortBy(a, b) {
+        const aData = dereference(a, key);
+        const bData = dereference(b, key);
+
+        if (aData < bData) return direction === 'ascending' ? -1 : 1;
+        if (aData > bData) return direction === 'ascending' ? 1 : -1;
+        return 0;
+      };
+    }
+
+    function dereference(obj, key) {
+      if (!obj || typeof obj !== 'object') return obj;
+      if (!key.includes('.')) return obj[key];
+
+      const tokens = key.split('.');
+      for (const token of tokens) {
+        obj = obj[token];
+        if (obj == null) return obj;
+      }
+
+      return obj;
+    }
+  </script>
+</head>
+</html>
